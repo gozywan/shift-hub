@@ -1,4 +1,4 @@
-;; ShiftHub - Decentralized Creator Economy Platform
+;; ShiftHub - Decentralized Creator Economy Platform (Cleaned Version)
 
 ;; Error Constants
 (define-constant ERR_UNAUTHORIZED (err u1))
@@ -22,7 +22,7 @@
 (define-data-var content-id-nonce uint u0)
 (define-data-var engagement-request-nonce uint u0)
 (define-data-var minimum-influence uint u1000)
-(define-data-var content-decay-rate uint u5) ;; percentage per year
+(define-data-var content-decay-rate uint u5)
 (define-data-var base-reputation uint u100)
 
 ;; Data Maps
@@ -80,7 +80,7 @@
     {
         parent-content: uint,
         required-subcontent: (list 5 uint),
-        collab-logic: (string-ascii 32) ;; "AND", "OR", "THRESHOLD"
+        collab-logic: (string-ascii 32)
     }
 )
 
@@ -200,7 +200,6 @@
         (asserts! (get is-active content-info) ERR_INVALID_CONTENT)
         (asserts! (not (is-eq commitment 0x00)) ERR_INVALID_COMMITMENT)
         
-        ;; Check for duplicate curation
         (asserts! (is-none (map-get? creator-dna-proofs {creator: tx-sender, content-id: content-id})) 
                   ERR_DUPLICATE_CURATION)
         
@@ -215,11 +214,10 @@
                 last-curated: block-height,
                 curator: tx-sender,
                 influence-amount: influence-amount,
-                dna-valid-until: (+ block-height u52560) ;; ~1 year
+                dna-valid-until: (+ block-height u52560)
             }
         )
         
-        ;; Update curator profile
         (map-set curator-profiles tx-sender 
             (merge curator-profile {
                 total-curations: (+ (get total-curations curator-profile) u1),
@@ -273,14 +271,12 @@
         (asserts! (< block-height (get dna-valid-until dna-proof)) ERR_CONTENT_EXPIRED)
         (asserts! (is-eq calculated-root (get merkle-root dna-proof)) ERR_INVALID_MERKLE_PROOF)
         
-        ;; Update successful curation count
         (map-set curator-profiles tx-sender 
             (merge curator-profile {
                 successful-curations: (+ (get successful-curations curator-profile) u1)
             })
         )
         
-        ;; Update creator reputation
         (match (map-get? creator-reputation creator)
             existing-rep (map-set creator-reputation creator 
                 (merge existing-rep {
@@ -355,6 +351,60 @@
     )
 )
 
+(define-public (fulfill-engagement-request (request-id uint) (content-proofs (list 10 uint)))
+    (let (
+        (request (unwrap! (map-get? engagement-requests request-id) ERR_ENGAGEMENT_REQUEST_NOT_FOUND))
+        (creator-rep (calculate-reputation tx-sender))
+    )
+        (asserts! (get is-active request) ERR_ENGAGEMENT_REQUEST_NOT_FOUND)
+        (asserts! (< block-height (get deadline request)) ERR_DEADLINE_PASSED)
+        (asserts! (>= creator-rep (get reputation-threshold request)) ERR_REPUTATION_TOO_LOW)
+        (asserts! (is-eq (len content-proofs) (len (get content-requirements request))) ERR_INVALID_CONTENT)
+        
+        (map-set engagement-requests request-id 
+            (merge request {is-active: false}))
+        
+        (try! (as-contract (stx-transfer? (get reward-amount request) tx-sender (get requester request))))
+        
+        (match (map-get? creator-reputation tx-sender)
+            existing-rep (map-set creator-reputation tx-sender 
+                (merge existing-rep {
+                    curation-bonus: (+ (get curation-bonus existing-rep) u20),
+                    last-updated: block-height
+                }))
+            (map-set creator-reputation tx-sender {
+                base-score: (var-get base-reputation),
+                curation-bonus: u20,
+                influence-penalties: u0,
+                last-updated: block-height
+            })
+        )
+        
+        (ok true)
+    )
+)
+
+(define-public (apply-content-decay (content-id uint))
+    (let (
+        (content-info (unwrap! (map-get? creative-content content-id) ERR_INVALID_CONTENT))
+        (time-weight (map-get? temporal-content-weights {content-id: content-id, time-period: block-height}))
+    )
+        (asserts! (get is-active content-info) ERR_INVALID_CONTENT)
+        
+        (match time-weight
+            weight-info 
+            (if (not (get decay-applied weight-info))
+                (begin
+                    (map-set temporal-content-weights 
+                        {content-id: content-id, time-period: block-height}
+                        (merge weight-info {decay-applied: true}))
+                    (ok true))
+                (ok false))
+            (ok false)
+        )
+    )
+)
+
 ;; Read-Only Functions
 (define-read-only (get-content-info (content-id uint))
     (map-get? creative-content content-id)
@@ -373,4 +423,38 @@
 )
 
 (define-read-only (get-content-collaboration (content-id uint))
-    (map-get? content-collaborations content-
+    (map-get? content-collaborations content-id)
+)
+
+(define-read-only (get-creator-reputation (creator principal))
+    (calculate-reputation creator)
+)
+
+(define-read-only (get-temporal-weight (content-id uint) (time-period uint))
+    (map-get? temporal-content-weights {content-id: content-id, time-period: time-period})
+)
+
+(define-read-only (get-contract-info)
+    {
+        owner: (var-get contract-owner),
+        content-count: (var-get content-id-nonce),
+        engagement-request-count: (var-get engagement-request-nonce),
+        minimum-influence: (var-get minimum-influence),
+        decay-rate: (var-get content-decay-rate),
+        base-reputation: (var-get base-reputation)
+    }
+)
+
+(define-read-only (is-curator-approved (curator principal))
+    (match (map-get? curator-profiles curator)
+        profile (get is-approved profile)
+        false
+    )
+)
+
+(define-read-only (get-content-virality (creator principal) (content-id uint))
+    (match (map-get? creator-dna-proofs {creator: creator, content-id: content-id})
+        proof (some (get virality-score proof))
+        none
+    )
+)
